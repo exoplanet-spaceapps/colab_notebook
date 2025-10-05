@@ -1,0 +1,266 @@
+# Kubernetes deployment for Kepler Exoplanet Detection Model Server
+# Includes: Deployment, Service, ConfigMap, HPA, PVC
+
+---
+# ConfigMap for application configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kepler-model-config
+  namespace: default
+data:
+  MODEL_REGISTRY_PATH: "/app/models"
+  CACHE_SIZE: "3"
+  ENABLE_AB_TESTING: "false"
+  DEFAULT_MODEL: "auto"
+  LOG_LEVEL: "info"
+
+---
+# PersistentVolumeClaim for model storage
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: model-storage-pvc
+  namespace: default
+spec:
+  accessModes:
+    - ReadOnlyMany
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: standard
+
+---
+# Deployment for model server
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kepler-model-server
+  namespace: default
+  labels:
+    app: kepler-model-server
+    version: v1.0.0
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: kepler-model-server
+  template:
+    metadata:
+      labels:
+        app: kepler-model-server
+        version: v1.0.0
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: model-server
+        image: kepler-model-server:1.0.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 8000
+          protocol: TCP
+        envFrom:
+        - configMapRef:
+            name: kepler-model-config
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1000m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+        livenessProbe:
+          httpGet:
+            path: /api/v1/health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /api/v1/health
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+        volumeMounts:
+        - name: models
+          mountPath: /app/models
+          readOnly: true
+        - name: logs
+          mountPath: /app/logs
+      volumes:
+      - name: models
+        persistentVolumeClaim:
+          claimName: model-storage-pvc
+      - name: logs
+        emptyDir: {}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - kepler-model-server
+              topologyKey: kubernetes.io/hostname
+
+---
+# Service for model server
+apiVersion: v1
+kind: Service
+metadata:
+  name: kepler-model-service
+  namespace: default
+  labels:
+    app: kepler-model-server
+spec:
+  type: LoadBalancer
+  selector:
+    app: kepler-model-server
+  ports:
+  - name: http
+    protocol: TCP
+    port: 80
+    targetPort: 8000
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 3600
+
+---
+# HorizontalPodAutoscaler for auto-scaling
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: kepler-model-hpa
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: kepler-model-server
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 30
+      - type: Pods
+        value: 2
+        periodSeconds: 30
+
+---
+# Ingress for external access
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kepler-model-ingress
+  namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - kepler-api.example.com
+    secretName: kepler-tls-secret
+  rules:
+  - host: kepler-api.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: kepler-model-service
+            port:
+              number: 80
+
+---
+# ServiceMonitor for Prometheus (if using Prometheus Operator)
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kepler-model-monitor
+  namespace: default
+  labels:
+    app: kepler-model-server
+spec:
+  selector:
+    matchLabels:
+      app: kepler-model-server
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
+
+# ============================================================================
+# Deployment Instructions:
+# ============================================================================
+#
+# Apply all resources:
+#   kubectl apply -f kubernetes-deployment.yaml
+#
+# Check deployment status:
+#   kubectl get deployments
+#   kubectl get pods
+#   kubectl get services
+#
+# View logs:
+#   kubectl logs -f deployment/kepler-model-server
+#
+# Scale deployment:
+#   kubectl scale deployment kepler-model-server --replicas=5
+#
+# Update image:
+#   kubectl set image deployment/kepler-model-server model-server=kepler-model-server:1.1.0
+#
+# Rollback deployment:
+#   kubectl rollout undo deployment/kepler-model-server
+#
+# Port forward for testing:
+#   kubectl port-forward service/kepler-model-service 8000:80
+#
+# Delete all resources:
+#   kubectl delete -f kubernetes-deployment.yaml
+#
+# ============================================================================

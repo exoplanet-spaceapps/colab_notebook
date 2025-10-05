@@ -1,0 +1,25 @@
+# Testing dependencies for Kepler Exoplanet Detection
+
+# Core testing framework
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-timeout>=2.1.0
+pytest-xdist>=3.3.0  # Parallel test execution
+pytest-benchmark>=4.0.0  # Performance benchmarking
+
+# Mocking and fixtures
+pytest-mock>=3.11.0
+faker>=19.0.0
+
+# Code quality
+coverage>=7.3.0
+pytest-html>=3.2.0  # HTML test reports
+
+# ML/Data dependencies (should match main requirements)
+numpy>=1.24.0
+pandas>=2.0.0
+scikit-learn>=1.3.0
+tensorflow>=2.13.0
+
+# Additional testing utilities
+hypothesis>=6.82.0  # Property-based testing
